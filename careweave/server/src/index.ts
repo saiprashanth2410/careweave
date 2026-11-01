@@ -18,6 +18,9 @@ import { importMedicines } from './medicines.js';
 import { buildSeed, ensureSeed } from './seed.js';
 import { registerExasolAnalyticsRoutes } from './exasol/routes.js';
 import { catchAsyncRoutes } from './asyncRoutes.js';
+import { emitEvent } from './whatsapp/emitter.js';
+import { registerWhatsAppRoutes, registerWhatsAppSimulator } from './whatsapp/routes.js';
+import { nextToken, queueAhead, roomFor } from './whatsapp/messages.js';
 
 // Everything the server reads or writes lives next to the server code, whichever folder it was started from.
 const isVercel = !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
@@ -315,7 +318,9 @@ if (firebaseAuth) {
   app.post('/api/auth/firebase-login', (_req, res) => res.status(404).json({ error: 'Not found' }));
 }
 
+registerWhatsAppRoutes({ app, db: () => db });
 app.use('/api', auth);
+registerWhatsAppSimulator({ app, db: () => db });
 
 app.get('/api/me', (req: any, res) =>
   res.json({
@@ -502,6 +507,14 @@ app.patch('/api/appointments/:id', roles('receptionist', 'doctor'), async (req: 
     if (status === a.status) return res.status(409).json({ error: `Patient is already marked as ${status}` });
     a.status = status;
     if ((status === 'Checked In' || status === 'Waiting') && !a.checkedInAt) a.checkedInAt = now();
+    if ((status === 'Checked In' || status === 'Waiting') && !a.token) {
+      a.token = nextToken(db, a.date);
+      const pt = patientById(a.patientId);
+      emitEvent('PATIENT_CHECKED_IN', {
+        patientId: a.patientIdCode || pt?.patientId, name: a.patientName, phone: pt?.phone, token: a.token, doctor: a.doctorName,
+        room: roomFor(a.doctorName), triagePriority: a.priority || 'Normal OPD', queuePosition: queueAhead(db, a) + 1
+      });
+    }
     // Analytics measures the wait as check-in to the start of the consultation, so both moments are recorded.
     if (status === 'In Consultation' && !a.startedAt) a.startedAt = now();
     if (status === 'Completed' && !a.completedAt) a.completedAt = now();
@@ -684,6 +697,7 @@ app.patch('/api/lab/orders/:id', roles('lab'), async (req: any, res) => {
   const resultsChanged = results !== undefined && sig(results) !== sig(o.results);
   const submitted = ['awaiting_verification', 'verified', 'released'].includes(o.status);
   const t = new Date();
+  let labReleased = false;
 
   let observedAt: string | undefined;
   if (b.observedAt !== undefined) {
@@ -754,7 +768,9 @@ app.patch('/api/lab/orders/:id', roles('lab'), async (req: any, res) => {
     }
   }
   if (status) {
+    const wasFinal = ['verified', 'released'].includes(o.status);
     o.status = status;
+    if (!wasFinal && ['verified', 'released'].includes(status)) labReleased = true;
     if (status === 'collected') { o.collectedAt = now(); o.collectedBy = o.collectedBy || req.user.name; }
     if (['processing', 'awaiting_verification'].includes(status) && o.status !== 'released') { o.processedBy = req.user.name; o.processedById = req.user.id; }
     if (status === 'awaiting_verification') { o.reportedAt = now(); o.observedAt = observedAt || o.observedAt || now(); }
@@ -765,6 +781,15 @@ app.patch('/api/lab/orders/:id', roles('lab'), async (req: any, res) => {
   audit(req, amendment ? 'amend' : status ? `status:${status}` : 'update', 'labOrder', o.id,
     amendment ? `${amendment.changes.length} value(s) amended · ${amendment.reason}` : status ? `${status}${o.statusReason ? ' · ' + o.statusReason : ''}` : 'Fields updated');
   await save();
+  if (labReleased) {
+    const pt = o.registeredPatientRef ? patientById(o.registeredPatientRef) : null;
+    const rs = (o.results || []).filter((r: any) => r.value);
+    emitEvent('LAB_REPORT_RELEASED', {
+      patientId: o.patientId, name: o.patientName, phone: pt?.phone, testName: o.testName, pathologist: o.verifiedBy, verifiedAt: o.verifiedAt,
+      criticalCount: rs.filter((r: any) => r.flag === 'critical').length, abnormalCount: rs.filter((r: any) => r.flag === 'abnormal').length,
+      summary: rs.slice(0, 10).map((r: any) => ({ parameter: r.parameter, value: r.value, unit: r.unit, flag: r.flag || 'normal' }))
+    });
+  }
   res.json({ data: o });
 });
 
