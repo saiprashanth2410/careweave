@@ -17,6 +17,7 @@ import { registerDoctorRoutes } from './doctor.js';
 import { importMedicines } from './medicines.js';
 import { buildSeed, ensureSeed } from './seed.js';
 import { registerExasolAnalyticsRoutes } from './exasol/routes.js';
+import { catchAsyncRoutes } from './asyncRoutes.js';
 
 // Everything the server reads or writes lives next to the server code, whichever folder it was started from.
 const isVercel = !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
@@ -24,6 +25,8 @@ const SERVER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 loadEnv({ path: path.join(SERVER_DIR, '.env') });
 
 const app = express();
+
+catchAsyncRoutes(app);
 const PORT = Number(process.env.PORT || 4000);
 const DATA = isVercel ? '/tmp/careweave.json' : path.join(SERVER_DIR, 'data/careweave.json');
 
@@ -361,9 +364,10 @@ app.get('/api/patients', roles('receptionist', 'doctor'), (req: any, res) => {
 
 app.post('/api/patients', roles('receptionist', 'doctor', 'lab'), async (req: any, res) => {
   const { name, dob, phone, email, emergencyContact, _forceCreate, risk, gender } = req.body || {};
-  if (!name || !name.trim()) return res.status(400).json({ error: 'Full name is required' });
-  if (!dob) return res.status(400).json({ error: 'Date of birth is required' });
-  if (!phone || !phone.trim()) return res.status(400).json({ error: 'Phone number is required' });
+  if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'Full name is required' });
+  if (typeof dob !== 'string' || !dob) return res.status(400).json({ error: 'Date of birth is required' });
+  if (!(Date.parse(dob) <= Date.now())) return res.status(400).json({ error: 'Date of birth must be a valid date that is not in the future' });
+  if (typeof phone !== 'string' || !phone.trim()) return res.status(400).json({ error: 'Phone number is required' });
 
   const nameNorm = String(name).trim().toLowerCase();
   const duplicates = db.patients.filter((p: any) => p.name.toLowerCase() === nameNorm && p.dob === dob);
@@ -859,6 +863,8 @@ registerDoctorRoutes({
 registerExasolAnalyticsRoutes({ app, db: () => db, roles, audit, save, sampleAllowed });
 
 app.use((err: any, _req: any, res: any, _next: any) => {
+  if (err?.type === 'entity.parse.failed') return res.status(400).json({ error: 'Request body is not valid JSON' });
+  if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Request body is too large' });
   console.error(err);
   res.status(500).json({ error: 'Unexpected server error' });
 });
