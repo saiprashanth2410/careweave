@@ -27,10 +27,21 @@ const app = express();
 const PORT = Number(process.env.PORT || 4000);
 const DATA = isVercel ? '/tmp/careweave.json' : path.join(SERVER_DIR, 'data/careweave.json');
 
+const isProd = process.env.NODE_ENV === 'production';
 if (!isVercel) {
-  app.use(helmet({ contentSecurityPolicy: false }));
+  app.use(helmet());
 }
-app.use(cors({ origin: true, credentials: true }));
+// Browsers on these origins may call the API. CLIENT_ORIGIN is a comma-separated list. Requests with no Origin
+// header (same-origin, curl, server to server) are not a CORS concern and pass. Outside production, localhost is open.
+const allowedOrigins = String(process.env.CLIENT_ORIGIN || '').split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean);
+app.use(cors({
+  credentials: true,
+  origin(origin, cb) {
+    if (!origin) return cb(null, true);
+    const ok = allowedOrigins.includes(origin) || (!isProd && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin));
+    cb(null, ok);
+  },
+}));
 app.use(express.json({ limit: '14mb' })); // 10 MB scan images arrive base64-encoded
 
 // Small in-memory limiter: enough to slow password guessing and runaway uploads on one server.
@@ -241,7 +252,8 @@ const FIREBASE_PROJECT_ID = String(process.env.FIREBASE_PROJECT_ID || '').trim()
 const firebaseOn = !!FIREBASE_PROJECT_ID;
 const firebaseAuth = firebaseOn ? getAuth(getApps()[0] ?? initializeApp({ projectId: FIREBASE_PROJECT_ID })) : null;
 // Email and password sign-in with a local password is for development. It is off once Firebase is configured.
-const localLoginAllowed = !firebaseOn || process.env.ALLOW_LOCAL_LOGIN === 'true';
+// In production it is also off unless ALLOW_LOCAL_LOGIN=true is set on purpose.
+const localLoginAllowed = process.env.ALLOW_LOCAL_LOGIN === 'true' || (!firebaseOn && !isProd);
 // A Firebase account can be created by anyone unless sign-up is switched off in the console, so an unverified
 // email is not proof of who someone is. Turn this off only after disabling sign-up in Firebase.
 const requireVerifiedEmail = process.env.FIREBASE_REQUIRE_VERIFIED_EMAIL !== 'false';
@@ -811,8 +823,8 @@ app.get('/api/lab/orders/:id/attachments/:attId', roles('lab', 'doctor'), async 
 });
 
 // ── Synthetic sample scenario ───────────────────────────────────────────────
-// One labelled, made-up patient journey for demonstrations. Off when ALLOW_SAMPLE_DATA=false.
-const sampleAllowed = process.env.ALLOW_SAMPLE_DATA !== 'false';
+// One labelled, made-up patient journey for demonstrations. Off when ALLOW_SAMPLE_DATA=false, and off by default in production.
+const sampleAllowed = process.env.ALLOW_SAMPLE_DATA ? process.env.ALLOW_SAMPLE_DATA === 'true' : !isProd;
 let scenarioRunning = false;
 app.get('/api/demo/scenario', (_req, res) => res.json({ available: sampleAllowed, loaded: db.patients.some((p: any) => p.sample) }));
 app.post('/api/demo/scenario', roles('receptionist', 'doctor', 'lab'), async (req: any, res) => {
