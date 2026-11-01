@@ -48,6 +48,7 @@ export type Appointment = {
   reason: string;
   status: string;
   checkedInAt?: string;
+  token?: string;
   rescheduledAt?: string;
 };
 

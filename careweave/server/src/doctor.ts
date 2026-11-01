@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { checksum, findIssues, matchPatient, type Identity, type Issue } from './reconcile.js';
 import { searchMedicines } from './medicines.js';
 import { checkDuplicateTherapy } from './safety/molecules.js';
+import { emitEvent } from './whatsapp/emitter.js';
 
 // Doctor portal API. Every route checks the role here on the server, and patient data is only
 // reachable for a patient the doctor is linked to (an appointment assigned to them, or their own encounter).
@@ -500,6 +501,10 @@ export function registerDoctorRoutes(c: Ctx) {
     audit(req, 'create', 'prescription', r.id, `${medicine} ${dosage}${allergy ? ' (allergy override)' : ''}`);
     if (high.length) audit(req, 'override', 'prescription', r.id, `Duplicate therapy override for ${molecules}: ${text(ov.overrideReason, 500)}`);
     await save();
+    emitEvent('PRESCRIPTION_PRESCRIBED', {
+      patientId: p.patientId, name: p.name, phone: p.phone, doctor: req.user.name, encounterId: enc.id,
+      medicines: [{ name: r.medicine, dosage: r.dosage, frequency: r.frequency, duration: r.duration, foodInstruction: r.instructions }]
+    });
     res.status(201).json(r);
   });
 

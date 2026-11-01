@@ -420,9 +420,9 @@ function OverviewSection({
 
   const handleQuickCheckIn = async (a: Appointment) => {
     try {
-      await api.updateAppointment(a.id, { status: 'Checked In' });
+      const updated = await api.updateAppointment(a.id, { status: 'Checked In' });
       notify(`${a.patientName} checked in. Opening token slip.`);
-      onPrintToken?.(a, 1);
+      onPrintToken?.({ ...a, ...updated }, 1);
       loadData();
     } catch (e) {
       notify((e as Error).message);
